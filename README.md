@@ -112,23 +112,6 @@ sudo nvme smart-log /dev/nvme0
 # Kernel view of the block device
 cat /proc/partitions
 ```
-
-## Measuring IOPS (without fio)
-
-Since the device is cosimulated, expect low IOPS — the goal is functional
-correctness, not throughput.
-
-```bash
-# Live IOPS while running a workload (r/s + w/s)
-iostat -x 1 /dev/nvme0n1
-
-# Simple read workload
-sudo dd if=/dev/nvme0n1 of=/dev/null bs=4k count=10000 iflag=direct
-
-# Latency + IOPS
-sudo ioping -D -s 4k -c 100 /dev/nvme0n1
-```
-
 ## License
 
 MIT License. This project builds on and vendors
