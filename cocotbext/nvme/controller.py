@@ -30,6 +30,8 @@ class NvmeNs(Memory):
         total_sz = lbas * num_lbas
         super().__init__(size=total_sz)
 
+        self.log = logging.getLogger("cocotb.nvme.ns")
+
         self.size = total_sz #default to 512MB
         self.capacity = total_sz
         self.lbas = lbas
