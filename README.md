@@ -112,6 +112,8 @@ sudo nvme smart-log /dev/nvme0
 # Kernel view of the block device
 cat /proc/partitions
 ```
+## Limitations
+This cosimulation is functional, not timing-accurate: it faithfully models transactions and data, but not cycle-level timing or real hardware performance.
 ## License
 
 MIT License. This project builds on and vendors
