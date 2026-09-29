@@ -15,6 +15,7 @@ a functional NVMe controller that can be driven by a real NVMe host driver
 - I/O commands: Read, Write (with PRP list / DMA handling)
 - Configurable namespaces backed by sparse memory
 - Connects to QEMU via a PCIe cosimulation transport
+- For co-simulation with real RTL (hardware gzip compressor) see [qemu_cosim_rtl](https://github.com/syedsk/cocotbext-nvme/tree/qemu_cosim_rtl) branch
 
 ## Requirements
 
