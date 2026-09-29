@@ -1,9 +1,16 @@
-# cocotbext-nvme
+# cocotbext-nvme (RTL cosimulation branch)
 
 NVMe endpoint model for [cocotb](https://www.cocotb.org/), built on top of
 [cocotbext-pcie](https://github.com/alexforencich/cocotbext-pcie). It implements
 a functional NVMe controller that can be driven by a real NVMe host driver
 (e.g. the Linux kernel `nvme` driver) via QEMU cosimulation.
+
+**This branch (`qemu_cosim_rtl`)** extends the model to cosimulate against an
+**RTL DUT**: guest software drives the NVMe model, which in turn exercises real
+RTL (a hardware gzip compressor) inside the cocotb simulator.
+
+> **Note:** This is a *functional* cosimulation — it models protocol behavior and
+> data correctness, not cycle-accurate timing or real-world performance.
 
 ## Features
 
@@ -15,6 +22,28 @@ a functional NVMe controller that can be driven by a real NVMe host driver
 - I/O commands: Read, Write (with PRP list / DMA handling)
 - Configurable namespaces backed by sparse memory
 - Connects to QEMU via a PCIe cosimulation transport
+- **RTL cosimulation:** drive a real hardware gzip compressor (RTL) from guest
+  software through the NVMe data path
+
+## Architecture
+
+```
+┌────────────────────────────────────────────────┐
+│                     QEMU                         │
+│    Linux guest ── nvme driver ── PCIe config     │
+│                      │                           │
+│          -device cocotb-pcie-endpoint            │
+└──────────────────────┼───────────────────────────┘
+                       │  cosim transport (TLPs)
+┌──────────────────────┼───────────────────────────┐
+│                cocotb + simulator                 │
+│   ┌────────────────────────────────────────────┐ │
+│   │ NvmeEndpoint (PCIe) ── NvmeController        │ │
+│   │        │                                     │ │
+│   │        └── data path ──► gzip RTL DUT        │ │
+│   └────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────┘
+```
 
 ## Requirements
 
@@ -24,8 +53,33 @@ a functional NVMe controller that can be driven by a real NVMe host driver
   (vendored under `cocotbext/pcie`)
 - QEMU built with the `cocotb-pcie-endpoint` cosim device
   ([fork](https://github.com/syedsk/qemu))
+- A supported HDL simulator (e.g. **Synopsys VCS**) for the RTL DUT
 - Linux host with the `nvme` driver and
   [`nvme-cli`](https://github.com/linux-nvme/nvme-cli) (for testing)
+
+## Getting the RTL (GPL — fetched as a submodule)
+
+The RTL gzip compressor is the GPL-licensed
+[FPGA-Gzip-compressor](https://github.com/WangXuan95/FPGA-Gzip-compressor) by
+WangXuan95.
+
+Clone with submodules, or initialize them after cloning:
+
+```bash
+# Clone including submodules
+git clone --recurse-submodules -b qemu_cosim_rtl \
+    git@github.com:syedsk/cocotbext-nvme.git
+
+# Or, if already cloned:
+git submodule update --init --recursive
+```
+
+The RTL sources are provided under `rtl/gzip/` after initialization.
+
+<!-- CONFIRM: update the RTL path(s) below once repo structure is verified.
+     find rtl/gzip -type f
+     grep "^module" rtl/gzip/Arty-example/RTL/fpga_top.v
+-->
 
 ## Usage
 
@@ -76,9 +130,12 @@ QEMU_BIOS_DIR="$TOP_DIR/binaries"
     -nographic
 ```
 
-### 3. Run the VCS cosimulation
+### 3. Run the RTL cosimulation
 
 ```bash
+# Initialize the RTL submodule first (if not already done)
+git submodule update --init --recursive
+
 cd cocotbext-nvme
 make
 ```
@@ -97,46 +154,32 @@ Node          SN                   Model                       Namespace  Usage 
 ## Verifying the Device (in the guest)
 
 ```bash
-# List NVMe devices
 sudo nvme list
-
-# Identify Controller (serial, model, firmware, capabilities)
 sudo nvme id-ctrl /dev/nvme0
-
-# Identify Namespace (size, capacity, LBA format)
 sudo nvme id-ns /dev/nvme0n1
-
-# SMART / health log
 sudo nvme smart-log /dev/nvme0
-
-# Kernel view of the block device
 cat /proc/partitions
 ```
 
-## Measuring IOPS (without fio)
+## Branches
 
-Since the device is cosimulated, expect low IOPS — the goal is functional
-correctness, not throughput.
+- **`qemu_cosim`** — NVMe endpoint model cosimulated with QEMU (no RTL DUT)
+- **`qemu_cosim_rtl`** — this branch; adds RTL DUT cosimulation (gzip compressor)
 
-```bash
-# Live IOPS while running a workload (r/s + w/s)
-iostat -x 1 /dev/nvme0n1
+## Licensing
 
-# Simple read workload
-sudo dd if=/dev/nvme0n1 of=/dev/null bs=4k count=10000 iflag=direct
+This project (`cocotbext-nvme`) is licensed under the **MIT License**.
 
-# Latency + IOPS
-sudo ioping -D -s 4k -c 100 /dev/nvme0n1
-```
+It uses third-party components with their own licenses:
 
-## License
+| Component | Author | License | Inclusion |
+|-----------|--------|---------|-----------|
+| cocotbext-pcie | Alex Forencich | MIT | Vendored under `cocotbext/pcie/` (notices retained) |
+| [FPGA-Gzip-compressor](https://github.com/WangXuan95/FPGA-Gzip-compressor) | WangXuan95 | **GPL** |  referenced as a git submodule under `rtl/gzip/` |
 
-MIT License. This project builds on and vendors
-[cocotbext-pcie](https://github.com/alexforencich/cocotbext-pcie)
-(Copyright © Alex Forencich, MIT), whose copyright notice is retained in the
-vendored files.
 
 ## Acknowledgements
 
 - [Alex Forencich](https://github.com/alexforencich) for `cocotbext-pcie`
+- [WangXuan95](https://github.com/WangXuan95) for the FPGA gzip compressor RTL
 - The [cocotb](https://www.cocotb.org/) project
