@@ -62,7 +62,7 @@ class VirtNvmeEndpoint(MemoryEndpoint):
         self.init_mem_region(0, 0x1c, self.csts.to_bus(bigEndian=False).buff)
 
 class NvmeEndpoint(MemoryEndpoint):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, dut, *args, **kwargs):
 
         super().__init__(*args, **kwargs)
         print("Creating PF Endpoint")
@@ -72,7 +72,7 @@ class NvmeEndpoint(MemoryEndpoint):
         self.is_pf = True
         self.virt_functions = []
 
-        self.ctrlr = NvmeController(self)
+        self.ctrlr = NvmeController(dut, self)
         self.revision_id = 0x0
         # nvme
         self.class_code = (0x1 << 16) | (0x8 << 8) | 0x2

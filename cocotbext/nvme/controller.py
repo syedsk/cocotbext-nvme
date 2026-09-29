@@ -5,7 +5,9 @@ import logging
 from cocotb.triggers import Event, Timer, First
 from .memory import Memory
 from .defs import *
+from .gzip_hw import GzipHwCompressor
 import uuid
+import gzip, zlib
 
 class NvmeQueue():
     def __init__(self, size=None, qid=None, baseaddr=None, mapped_qid=None, ien=0, iv=0):
@@ -41,14 +43,33 @@ class NvmeNs(Memory):
         # nguid from nguid.com
         # self.nguid = b"\xFA\x3F\xCF\xDF\xB4\xC5\x4B\x61\x8B\x79\x86\xAF\xB4\x8F\xD7\xFD"
         self.eui64 = b"\xc0\xc0\x00\x00\x12\x34\x56\x78"
+        # side table: slba -> (compressed_bytes, original_len)
+        self.comp_map = {}
 
     def read_blocks(self, start, nblocks):
         addr = start * self.lbas
         length = nblocks * self.lbas
+        if start in self.comp_map:
+            compressed, orig_len = self.comp_map[start]
+
+            # SW decompress
+            raw = self._sw_decompress(compressed)
+            # pad/trim to the exact requested block-aligned length
+            if len(raw) < length:
+                raw = raw + b"\x00" * (length - len(raw))
+            return raw[:length]
+        # fallback: uncompressed region
         self.log.debug("read_blocks: len: %r size rem:%r addr: %r", length, self.size - addr, addr)
         if(length > (self.size - addr)):
             self.log.warning("Boundary Error: Read from NS, MAX SIZE:",self.size);
         return self.read(addr, length)
+
+    def write_compressed_blocks(self, slba, compressed, original_len):
+        # store in the side map; also keep raw in backing mem if you like
+        self.comp_map[slba] = (compressed, original_len)
+        self.log.info("stored slba=%d comp=%d orig=%d (ratio=%.2f)",
+                       slba, len(compressed), original_len,
+                       len(compressed) / max(original_len, 1))
 
     def write_blocks(self, start, data):
         addr = start * self.lbas
@@ -57,12 +78,22 @@ class NvmeNs(Memory):
 
         return self.write(addr, data)
 
+    @staticmethod
+    def _sw_decompress(data):
+        # If RTL emits full gzip container:
+        try:
+            return gzip.decompress(data)
+        except OSError:
+            # If RTL emits raw DEFLATE (no gzip header), use raw inflate:
+            return zlib.decompress(data, -zlib.MAX_WBITS)
+
 
 class NvmeController():
-    def __init__(self, ep):
+    def __init__(self, dut, ep):
 
         self.ep = ep 
 
+        self.gzip_hw = GzipHwCompressor(dut)
         self.log = logging.getLogger("cocotb.nvme.controller")
 
         self.mps = 0x1000
@@ -196,14 +227,14 @@ class NvmeController():
             return
         
 
-
-
     async def ctrlr_enable(self):
         self.log.info("enabling the controller")
         csts = self.csts
         csts.ready.integer = 1
         await self.ep.write_region(0, 0x1c, csts.to_bus(bigEndian=False).buff)
         self.admin_tid = cocotb.start_soon(self.ctrlr_admin_sq_process())
+        # reset gzip compressor module
+        await self.gzip_hw.reset()
 
     async def ctrlr_reset(self):
         self.log.info("resetting the controller")
@@ -287,7 +318,7 @@ class NvmeController():
                 elif (cmd.opc.integer == AdminCmd.SetFeatures):
                     await self.ctrlr_cmd_setfeatures(cmd)
                 else:
-                    self.log.warning("Unhandled admin cmd: ", cmd.opc.integer)
+                    self.log.warning("Unhandled admin cmd: %r", cmd.opc.integer)
                     raise Exception("Unhandled admin cmd: ", cmd.opc.integer)
 
 
@@ -405,7 +436,7 @@ class NvmeController():
                     await self.ep.mem_region.write(prp2, data[size:-1], offset)
 
     async def ctrlr_write_data(self, prp1, prp2, data):
-        self.log.info("ctrlr_write_data: len: ", len(data))
+        self.log.info("ctrlr_write_data: len: %r", len(data))
         offset = prp1 % self.mps
         if (offset == 0): # prp is an entry
             await self.ep.mem_region.write(prp1, data, len(data))
@@ -463,7 +494,7 @@ class NvmeController():
             await self.ctrlr_write_resp(prp1, prp2, data)
         elif (cdw10.cns.integer == Cns.IdNsp): #identify namespace
             identify = identify_namespace()
-            self.log.info("Identify namespace nsid: ", cmd.nsid.integer)
+            self.log.info("Identify namespace nsid: %r ", cmd.nsid.integer)
             if (cmd.nsid.integer == 1):
                 lbaf = id_lbaf()
                 ns = self.active_ns[0]
@@ -522,7 +553,7 @@ class NvmeController():
 
         else:
             status_code = StatusCode.InvalidField
-            self.log.warning("Unhandled cns command: ", cdw10.cns.integer)
+            self.log.warning("Unhandled cns command: %r", cdw10.cns.integer)
 
         # write the completion
         sq = self.submission_queues[0]
@@ -615,12 +646,12 @@ class NvmeController():
 
         dw10.populate(cmd.dw10)
 
-        self.log.info("lid:", dw10.lid.integer)
+        self.log.info("lid: %r", dw10.lid.integer)
         lid = dw10.lid.integer
 
         prp1 = cmd.prp1.integer
         prp2 = cmd.prp2.integer
-        self.log.info("prp1 prp2: ", hex(prp1), hex(prp2))
+        self.log.info("prp1: %r prp2: %r", hex(prp1), hex(prp2))
 
         if (lid == 2): # get smart/health log
             smart_health_log = getlogpage_smart_health()
@@ -696,7 +727,12 @@ class NvmeController():
         data = await self.read_dma_data(prp1, prp2, nlb * ns.lbas)
         self.log.debug("DATA: %r", data)
 
-        ns.write_blocks(slba, data)
+        # ---- HW compression ----
+        original_len = len(data)
+        compressed = await self.gzip_hw.compress(bytes(data))
+
+        # Store compressed payload + a small header holding the original length
+        ns.write_compressed_blocks(slba, compressed, original_len)
 
         # write the completion
         await self.ctrlr_write_completion(sq, cmd)
