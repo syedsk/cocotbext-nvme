@@ -1,0 +1,3 @@
+[submodule "rtl/gzip"]
+	path = rtl/gzip
+	url = https://github.com/WangXuan95/FPGA-Gzip-compressor
