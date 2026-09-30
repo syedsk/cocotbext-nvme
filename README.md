@@ -17,6 +17,27 @@ a functional NVMe controller that can be driven by a real NVMe host driver
 - Connects to QEMU via a PCIe cosimulation transport
 - For co-simulation with real RTL (hardware gzip compressor) see [qemu_cosim_rtl](https://github.com/syedsk/cocotbext-nvme/tree/qemu_cosim_rtl) branch
 
+## Architecture
+
+```
+┌────────────────────── QEMU ───────────────────────┐
+│  Linux guest ── nvme driver ── PCIe config/MMIO/DMA │
+│                        │                            │
+│              -device cocotb-pcie-endpoint           │
+└────────────────────────┼────────────────────────────┘
+                         │  cosim transport(zmq sockets) (TLPs) 
+┌────────────────────────▼────────────────────────────┐
+│                  cocotb (Python)                     │
+│   CosimNvme                                          │
+│     └── NvmeEndpoint (PCIe MemoryEndpoint)           │
+│           └── NvmeController                         │
+│                 ├── Admin / I/O queue processing     │
+│                 ├── Identify, Get Log, Set Features  │
+│                 ├── MSI-X interrupts                 │
+│                 └── Namespaces (sparse memory)       │
+└──────────────────────────────────────────────────────┘
+```
+
 ## Requirements
 
 - Python 3.8+
