@@ -485,8 +485,8 @@ class NvmeController():
             identify.avscc.integer = 1
             identify.tnvmcap0.integer = 2**32
             identify.unvmcap0.integer = 0
-            nqn = str(b'nqn.2023-10.io.amd:cocotb1')
-            identify.subnqn.integer = int.from_bytes(nqn.encode('utf-8'), "big")
+            nqn = b"nqn.2024-01.io.github.syedsk:cocotbext-nvme"
+            identify.subnqn.buff = nqn + b"\x00" * (256 - len(nqn))
             # formatnvm supported
             identify.oacs.integer = (1<<1)
             # write the response to dest
