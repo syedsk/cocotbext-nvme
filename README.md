@@ -1,4 +1,4 @@
-# cocotbext-nvme (RTL cosimulation branch)
+# cocotbext-nvme (w/ RTL cosimulation)
 
 NVMe endpoint model for [cocotb](https://www.cocotb.org/), built on top of
 [cocotbext-pcie](https://github.com/alexforencich/cocotbext-pcie). It implements
