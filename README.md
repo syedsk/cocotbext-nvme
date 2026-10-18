@@ -122,7 +122,8 @@ QEMU_BIOS_DIR="$TOP_DIR/binaries"
     -smp 4 \
     -drive file="$IMAGE",format=qcow2 \
     -device pcie-root-port,id=rp0,bus=pcie.0,chassis=1,slot=0 \
-    -device cocotb-pcie-endpoint,bus=rp0,addr=0x0 \
+    -device cocotb-pcie-endpoint,bus=rp0,addr=0x0, \
+    bar0_size=16384,bar0_type=0,bar1_size=16384,bar1_type=0 \
     -netdev user,id=eth0,hostfwd=tcp::2222-:22 \
     -net nic,netdev=eth0 \
     -serial mon:stdio \
