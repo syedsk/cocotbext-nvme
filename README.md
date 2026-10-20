@@ -41,13 +41,14 @@ a functional NVMe controller that can be driven by a real NVMe host driver
 ## Requirements
 
 - Python 3.8+
-- [cocotb](https://www.cocotb.org/)
+- [cocotb](https://www.cocotb.org/) version 1.92 
 - [cocotbext-pcie](https://github.com/alexforencich/cocotbext-pcie)
   (vendored under `cocotbext/pcie`)
 - QEMU built with the `cocotb-pcie-endpoint` cosim device
   ([fork](https://github.com/syedsk/qemu))
 - Linux host with the `nvme` driver and
   [`nvme-cli`](https://github.com/linux-nvme/nvme-cli) (for testing)
+- vcs or iverilog
 
 ## Usage
 
@@ -100,7 +101,7 @@ QEMU_BIOS_DIR="$TOP_DIR/binaries"
     -nographic
 ```
 
-### 3. Run the VCS cosimulation
+### 3. Run the VCS/iverilog cosimulation
 
 ```bash
 cd cocotbext-nvme
