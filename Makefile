@@ -19,7 +19,8 @@
 # THE SOFTWARE.
 
 TOPLEVEL_LANG = verilog
-
+# use SIM = icarus for iverilog simulation
+# SIM ?= icarus 
 SIM ?= vcs
 WAVES ?= 0
 
