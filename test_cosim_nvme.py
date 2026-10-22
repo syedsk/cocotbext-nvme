@@ -26,4 +26,4 @@ class TB:
 async def run_test_cosim(dut):
     tb = TB(dut);
     while True:
-      await Timer(10, units="ns")
+      await Timer(10, unit="ns")

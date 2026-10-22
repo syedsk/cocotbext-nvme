@@ -2,10 +2,7 @@
 # @author Syed Syed 
 
 import enum
-from cocotb.binary import BinaryValue
 from .bitfield import *
-
-binval = lambda nb: BinaryValue(n_bits=nb, value=0, bigEndian=False)
 
 class AdminCmd(enum.IntEnum):
     DeleteIoSq  = 0x0

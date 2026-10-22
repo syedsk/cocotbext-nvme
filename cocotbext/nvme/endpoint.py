@@ -50,16 +50,16 @@ class VirtNvmeEndpoint(MemoryEndpoint):
         caps.timeout.integer = 6
         caps.ams.integer = 1
         caps.mqes.integer = 0xfff #4k 
-        print ("caps: ", hex(caps.to_bus(bigEndian=False).integer))
-        self.init_mem_region(0, 0x0, caps.to_bus(bigEndian=False).buff) 
+        print ("caps: ", hex(caps.to_int()))
+        self.init_mem_region(0, 0x0, caps.to_bytes(byteorder="little"))
         version = nvme_version()
         version.mjr.integer = 0x1
         version.mnr.integer = 0x4
         version.ter.integer = 0x0
-        self.init_mem_region(0, 0x8, version.to_bus(bigEndian=False).buff) 
+        self.init_mem_region(0, 0x8, version.to_bytes(byteorder="little"))
         self.csts = nvme_csts()
         self.csts.ready.integer = 0
-        self.init_mem_region(0, 0x1c, self.csts.to_bus(bigEndian=False).buff)
+        self.init_mem_region(0, 0x1c, self.csts.to_bytes(byteorder="little"))
 
 class NvmeEndpoint(MemoryEndpoint):
     def __init__(self, *args, **kwargs):
@@ -105,18 +105,18 @@ class NvmeEndpoint(MemoryEndpoint):
         caps.timeout.integer = 6
         caps.ams.integer = 1
         caps.mqes.integer = 0xfff #4k
-        self.init_mem_region(0, 0x0, caps.to_bus(bigEndian=False).buff)
+        self.init_mem_region(0, 0x0, caps.to_bytes(byteorder="little"))
         version = nvme_version()
         version.mjr.integer = 0x1
         version.mnr.integer = 0x4
         version.ter.integer = 0x0
-        self.init_mem_region(0, 0x8, version.to_bus(bigEndian=False).buff)
+        self.init_mem_region(0, 0x8, version.to_bytes(byteorder="little"))
         csts = nvme_csts()
         csts.ready.integer = 0
-        self.init_mem_region(0, 0x1c, csts.to_bus(bigEndian=False).buff)
+        self.init_mem_region(0, 0x1c, csts.to_bytes(byteorder="little"))
         cmbsz = nvme_cmbsz()
         cmbsz.sz.integer = 0
-        self.init_mem_region(0, 0x3c, cmbsz.to_bus(bigEndian=False).buff)
+        self.init_mem_region(0, 0x3c, cmbsz.to_bytes(byteorder="little"))
 
     async def create_vf(self, num_vf, pciId, fn):
         print("CREATING VF:",num_vf, "PCIID:",pciId)

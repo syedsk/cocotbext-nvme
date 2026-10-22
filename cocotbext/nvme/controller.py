@@ -2,6 +2,7 @@
 # @author Syed Syed 
 
 import logging
+import cocotb
 from cocotb.triggers import Event, Timer, First
 from .memory import Memory
 from .defs import *
@@ -128,10 +129,8 @@ class NvmeController():
     async def ctrlr_write_handler(self, off, data, func):
         self.log.info("ctrlr_write_handler: off: %r", hex(off))
         if (off == 0x14):
-            vec = BinaryValue(n_bits=32, bigEndian=True)
             cc = self.cc
-            vec.assign(data[::-1]) # we read data in little endian
-            cc.populate(vec)
+            cc.populate(data, byteorder="little")
             self.log.debug("cc.en: %r", cc.en.integer)
             self.log.debug("cc.iocqes: %r", cc.iocqes.integer)
             self.log.debug("cc.mps: %r", cc.mps.integer)
@@ -158,10 +157,8 @@ class NvmeController():
                 await self.ctrlr_raise_intr(cq)
 
         if (off == 0x24): # AQA
-            vec = BinaryValue(n_bits=32, bigEndian=True)
             aqa = nvme_aqa()
-            vec.assign(data[::-1])
-            aqa.populate(vec)
+            aqa.populate(data, byteorder="little")
             queue = self.submission_queues[0]
             queue.size = aqa.asqs.integer + 1 # 0 base value
             self.log.debug("ASQ Size:%r", queue.size)
@@ -172,10 +169,8 @@ class NvmeController():
 
         if (off == 0x2c): # ASQ
             data = await self.ep.read_region(0, 0x28, 8)
-            vec = BinaryValue(n_bits=64, bigEndian=True)
             asq = nvme_asq()
-            vec.assign(data[::-1])
-            asq.populate(vec)
+            asq.populate(data, byteorder="little")
             sq = self.submission_queues[0]
             # we get 52 msb of asqb, shift by 12 to get 64bit addr
             sq.base_addr = (asq.asqb.integer << 12)
@@ -185,10 +180,8 @@ class NvmeController():
 
         if (off == 0x34): # ACQ
             data = await self.ep.read_region(0, 0x30, 8)
-            vec = BinaryValue(n_bits=64, bigEndian=True)
             acq = nvme_acq()
-            vec.assign(data[::-1])
-            acq.populate(vec)
+            acq.populate(data, byteorder="little")
             cq = self.completion_queues[0]
             # we get 52 msb of asqb, shift by 12 to get 64bit addr
             cq.base_addr = (acq.acqb.integer << 12)
@@ -202,7 +195,7 @@ class NvmeController():
         self.log.info("enabling the controller")
         csts = self.csts
         csts.ready.integer = 1
-        await self.ep.write_region(0, 0x1c, csts.to_bus(bigEndian=False).buff)
+        await self.ep.write_region(0, 0x1c, csts.to_bytes(byteorder="little"))
         self.admin_tid = cocotb.start_soon(self.ctrlr_admin_sq_process())
 
     async def ctrlr_reset(self):
@@ -249,13 +242,13 @@ class NvmeController():
         caps.mqes.integer = 0xfff #4k
         caps.cqr.integer = 1
 
-        await self.ep.write_region(0, 0x0, caps.to_bus(bigEndian=False).buff)
+        await self.ep.write_region(0, 0x0, caps.to_bytes(byteorder="little"))
         #reset asq doorbell
         await self.ep.write_region(0, 0x1000, b'\x00\x00\x00\x00')
 
         csts = self.csts
         csts.ready.integer = 0
-        await self.ep.write_region(0, 0x1c, csts.to_bus(bigEndian=False).buff)
+        await self.ep.write_region(0, 0x1c, csts.to_bytes(byteorder="little"))
 
     async def ctrlr_admin_sq_process(self):
         sq = self.submission_queues[0]
@@ -268,9 +261,7 @@ class NvmeController():
                 data = await self.ep.mem_region.read(sq_addr, 64)
                 #print ("cmd data: ", data)
                 cmd = nvme_cmd()
-                vec = BinaryValue(n_bits=512, bigEndian=True)
-                vec.assign(data[::-1])
-                cmd.populate(vec)
+                cmd.populate(data, byteorder="little")
 
                 if (cmd.opc.integer == AdminCmd.Identify):
                     await self.ctrlr_cmd_identify(cmd)
@@ -315,7 +306,7 @@ class NvmeController():
         dest = cq.base_addr + (cq.tail * (cpl.bus_len()//8))
         # write the completion
         #print ("writing completion at", hex(dest), "for cmd-id:", cmd.cid.integer)
-        data = cpl.to_bus(bigEndian=False).buff
+        data = cpl.to_bytes(byteorder="little")
         await self.ep.mem_region.write(dest, data)
 
         if (cq.tail + 1 == cq.size): # wrap around?
@@ -443,7 +434,7 @@ class NvmeController():
             version.mjr.integer = 1
             version.mnr.integer = 4
             version.ter.integer = 0
-            identify.ver = version.to_bus(bigEndian=False)
+            identify.ver.buff = version.to_bytes(byteorder="little")
             # sq entry size = 6 or 64 bytes
             identify.sqes.integer = (6 << 4) | 6
             # cq entry size = 6 or 64 bytes
@@ -459,7 +450,7 @@ class NvmeController():
             # formatnvm supported
             identify.oacs.integer = (1<<1)
             # write the response to dest
-            data = identify.to_bus(bigEndian=False).buff
+            data = identify.to_bytes(byteorder="little")
             await self.ctrlr_write_resp(prp1, prp2, data)
         elif (cdw10.cns.integer == Cns.IdNsp): #identify namespace
             identify = identify_namespace()
@@ -482,19 +473,17 @@ class NvmeController():
                 lbaf.ms.integer = 0
                 # 512bytes block size
                 lbaf.lbads.integer = 9
-                data = lbaf.to_bus().buff
-                identify.lbaf0.buff = data[::-1]
+                identify.lbaf0.buff = lbaf.to_bytes(byteorder="little")
 
                 # 4096bytes block size
                 lbaf.lbads.integer = 12
-                data = lbaf.to_bus().buff
-                identify.lbaf1.buff = data[::-1]
+                identify.lbaf1.buff = lbaf.to_bytes(byteorder="little")
             else:
                 # send zero filled in struct
                 pass
 
             # write the response to dest
-            data = identify.to_bus(bigEndian=False).buff
+            data = identify.to_bytes(byteorder="little")
             await self.ctrlr_write_resp(prp1, prp2, data)
 
         elif (cdw10.cns.integer == Cns.ActiveNsidLst): #active nsid list
@@ -516,8 +505,8 @@ class NvmeController():
             entry.scs.integer = 1
             entry.vfn.integer = 1
             data = bytearray()
-            data.extend(ctrl_list.to_bus(bigEndian=False).buff)
-            data.extend(entry.to_bus(bigEndian=False).buff)
+            data.extend(ctrl_list.to_bytes(byteorder="little"))
+            data.extend(entry.to_bytes(byteorder="little"))
             await self.ctrlr_write_resp(prp1, prp2, bytes(data))
 
         else:
@@ -628,7 +617,7 @@ class NvmeController():
             smart_health_log.temp_sensor_2.integer = 96 # 96 degrees
             smart_health_log.avail_spare.integer = 100
             smart_health_log.avail_spare_thres.integer = 12
-            data = smart_health_log.to_bus(bigEndian=False).buff
+            data = smart_health_log.to_bytes(byteorder="little")
             await self.ctrlr_write_data(prp1, prp2, data)
 
         # write the completion
@@ -652,7 +641,7 @@ class NvmeController():
         dw0 = cpl_dw0_numqueues()
         dw0.ncqa.integer = 15
         dw0.nsqa.integer = 15
-        val = dw0.to_bus(bigEndian=False).integer
+        val = dw0.to_int()
         sq = self.submission_queues[0]
         await self.ctrlr_write_completion(sq, cmd, dw0=val)
 
@@ -712,9 +701,7 @@ class NvmeController():
                 data = await self.ep.mem_region.read(sq_addr, 64)
                 #print ("cmd data: ", data)
                 cmd = nvme_cmd()
-                vec = BinaryValue(n_bits=512, bigEndian=True)
-                vec.assign(data[::-1])
-                cmd.populate(vec)
+                cmd.populate(data, byteorder="little")
                 self.log.debug("CMD :%r", cmd.opc.integer)
 
                 if (cmd.opc.integer == IoCmd.Read):
@@ -728,6 +715,6 @@ class NvmeController():
                 #print ("sq.head: ", sq.head)
                 sq.head = (sq.head + 1) % (sq.size)
                 #print ("After increment sq.head : ", sq.head)
-            await Timer(10000, units="ns")
+            await Timer(10000, unit="ns")
 
 
