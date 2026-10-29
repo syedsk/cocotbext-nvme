@@ -49,6 +49,7 @@ a functional NVMe controller that can be driven by a real NVMe host driver
 - Linux host with the `nvme` driver and
   [`nvme-cli`](https://github.com/linux-nvme/nvme-cli) (for testing)
 - vcs or iverilog
+- qemu [VM image](https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img)
 
 ## Usage
 
