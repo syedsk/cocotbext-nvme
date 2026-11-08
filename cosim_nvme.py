@@ -3,6 +3,7 @@
 
 from cocotb.triggers import Event, Timer, First
 from cocotbext.pcie.core import Device
+from cocotbext.pcie.core.cosim_port import CosimPort
 from cocotbext.nvme import NvmeEndpoint
 from cocotbext.nvme import NvmeController
 from cocotbext.nvme.defs import *
@@ -13,7 +14,7 @@ class CosimNvme():
         self.dut = dut
 
         self.ep = NvmeEndpoint()
-        self.dev = Device(self.ep)
+        self.dev = Device(self.ep, port=CosimPort())
 
         #connect to the qemu cosim
         self.dev.start_cosim_server(hostname)

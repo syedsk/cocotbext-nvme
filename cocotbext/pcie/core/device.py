@@ -26,14 +26,14 @@ import struct
 import logging
 
 from .endpoint import Endpoint
+from .port import SimPort
 from .tlp import Tlp, TlpType
 from .utils import PcieId
-from .cosim_port import CosimPort
 
 
 class Device:
     """PCIe device, container for multiple functions"""
-    def __init__(self, eps=None, *args, **kwargs):
+    def __init__(self, eps=None, *args, port=None, **kwargs):
 
         self._bus_num = 0
 
@@ -45,8 +45,10 @@ class Device:
         self.functions = []
         self.upstream_port = None
 
-        #self.set_port(SimPort(fc_init=[[64, 1024, 64, 64, 0, 0]]*8))
-        self.set_port(CosimPort())
+        # SimPort when behind a switch; pass port=CosimPort() for direct QEMU cosim
+        if port is None:
+            port = SimPort(fc_init=[[64, 1024, 64, 64, 0, 0]]*8)
+        self.set_port(port)
 
         if eps:
             try:
@@ -113,6 +115,10 @@ class Device:
 
     async def upstream_recv(self, tlp):
         self.log.debug("Got downstream TLP: %r", tlp)
+        if self.log.isEnabledFor(logging.DEBUG):
+            self.log.debug("DEVICE[bus=%d] recv type=%s completer=%s functions=%s",
+                           self.bus_num, tlp.fmt_type, tlp.completer_id,
+                           [(str(f.pcie_id), hex(f.vendor_id)) for f in self.functions])
         assert tlp.check()
         if tlp.fmt_type in {TlpType.CFG_READ_0, TlpType.CFG_WRITE_0}:
             # config type 0
@@ -137,10 +143,10 @@ class Device:
             else:
                 for f in f.virt_functions:
                     if f.match_tlp(tlp):
-                        print("MATCHED TLP IN VF:", f.pcie_id)
+                        self.log.debug("Matched TLP in VF: %s", f.pcie_id)
                         await f.upstream_recv(tlp)
                         return
-        print("NO FUNCTIONS MATCHED: TLP: ",tlp)
+        self.log.debug("No functions matched TLP: %r", tlp)
 
         tlp.release_fc()
 
