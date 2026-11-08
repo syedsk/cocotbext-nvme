@@ -278,8 +278,9 @@ class NvmeController():
                 elif (cmd.opc.integer == AdminCmd.SetFeatures):
                     await self.ctrlr_cmd_setfeatures(cmd)
                 else:
-                    self.log.warning("Unhandled admin cmd: ", cmd.opc.integer)
-                    raise Exception("Unhandled admin cmd: ", cmd.opc.integer)
+                    self.log.warning("Unhandled admin cmd: 0x%02x, completing with Invalid Opcode",
+                                     cmd.opc.integer)
+                    await self.ctrlr_write_completion(sq, cmd, sc=StatusCode.InvalidOpCode)
 
 
                 #print ("sq.head: ", sq.head)
@@ -301,8 +302,8 @@ class NvmeController():
         cpl.sqhd.integer = sq.head
         cpl.cid.integer = cmd.cid.integer
         cpl.ptag.integer = cq.ptag
-        cpl.sc.integer = 0
-        cpl.sct.integer = 0
+        cpl.sc.integer = sc
+        cpl.sct.integer = sct
         dest = cq.base_addr + (cq.tail * (cpl.bus_len()//8))
         # write the completion
         #print ("writing completion at", hex(dest), "for cmd-id:", cmd.cid.integer)
@@ -365,54 +366,39 @@ class NvmeController():
     async def ctrlr_write_resp(self, prp1, prp2, data):
         offset = prp1 % self.mps
         data_len = len(data)
-        if(data_len <= self.mps):
-            self.log.debug("DMA DATA <= 4096")
-            if (offset == 0): # PRP1 is an entry with 4k aligned
-                await self.ep.mem_region.write(prp1, data, self.mps)
-            else:
-                size = (self.mps - offset)
-                await self.ep.mem_region.write(prp1, data[0:size-1], size)
-                await self.ep.mem_region.write(prp2, data[size:-1], offset)
-        else:
-            size = self.mps - offset
-            await self.ep.mem_region.write(prp1, data[0:size-1], size)
-            data_len -= size
-            prp_list = False
-            while(data_len > self.mps):
-                add = await self.ep.mem_region.read(prp2, 8)
-                add = int.from_bytes(add, byteorder="little")
-                dma_size = size + self.mps
-                await self.ep.mem_region.write(add, data[size:dma_size-1], self.mps)
-                size = dma_size
-                prp2 += 8
-                data_len -= self.mps
-                prp_list = True
-            if(data_len > 0):
-                if(prp_list == True):
-                    add = await self.ep.mem_region.read(prp2, 8)
-                    add = int.from_bytes(add, byteorder="little")
-                    await self.ep.mem_region.write(add, data[size:-1], self.mps)
-                else:
-                    await self.ep.mem_region.write(prp2, data[size:-1], offset)
+
+        # PRP1: from its offset up to the end of that page
+        size = min(data_len, self.mps - offset)
+        await self.ep.mem_region.write(prp1, data[0:size])
+        remaining = data_len - size
+        if remaining == 0:
+            return
+
+        # fits in one more page: PRP2 is a data pointer
+        if remaining <= self.mps:
+            self.log.debug("DMA to host: PRP2 is a data pointer")
+            await self.ep.mem_region.write(prp2, data[size:])
+            return
+
+        # otherwise PRP2 points to a PRP list
+        self.log.debug("DMA to host: PRP2 is a PRP list")
+        while remaining > 0:
+            entry = await self.ep.mem_region.read(prp2, 8)
+            addr = int.from_bytes(entry, byteorder="little")
+            # last entry of a list page chains to the next list page
+            # when more than one page of data is still to go
+            if (prp2 % self.mps) == (self.mps - 8) and remaining > self.mps:
+                prp2 = addr
+                continue
+            chunk = min(remaining, self.mps)
+            await self.ep.mem_region.write(addr, data[size:size + chunk])
+            size += chunk
+            remaining -= chunk
+            prp2 += 8
 
     async def ctrlr_write_data(self, prp1, prp2, data):
-        self.log.info("ctrlr_write_data: len: ", len(data))
-        offset = prp1 % self.mps
-        if (offset == 0): # prp is an entry
-            await self.ep.mem_region.write(prp1, data, len(data))
-        else:
-            length = len(data)
-            size = (length - offset)
-            await self.ep.mem_region.write(prp1, data[0:size-1], size)
-
-    async def ctrlr_read_data(self, prp1, prp2, length):
-        offset = prp1 % self.mps
-        if (offset == 0): #PRP is an entry
-            data = await self.ep.mem_region.read(prp1, length)
-        else:
-            size = (4096 - offset)
-            data = await self.ep.mem_region.read(prp1, size)
-        return data
+        self.log.info("ctrlr_write_data: len: %d", len(data))
+        await self.ctrlr_write_resp(prp1, prp2, data)
 
     async def ctrlr_cmd_identify(self, cmd):
         self.log.info("CMD : Identify")
@@ -454,7 +440,7 @@ class NvmeController():
             await self.ctrlr_write_resp(prp1, prp2, data)
         elif (cdw10.cns.integer == Cns.IdNsp): #identify namespace
             identify = identify_namespace()
-            self.log.info("Identify namespace nsid: ", cmd.nsid.integer)
+            self.log.info("Identify namespace nsid: %d", cmd.nsid.integer)
             if (cmd.nsid.integer == 1):
                 lbaf = id_lbaf()
                 ns = self.active_ns[0]
@@ -495,6 +481,21 @@ class NvmeController():
             await self.ctrlr_write_resp(prp1, prp2, bytes(data))
             # write the response to dest
             await self.ctrlr_write_resp(prp1, prp2, data)
+        elif (cdw10.cns.integer == Cns.NsidDesc): # namespace id descriptor list
+            self.log.info("Identify NS descriptor list nsid: %d", cmd.nsid.integer)
+            if (cmd.nsid.integer == 1):
+                ns = self.active_ns[0]
+                desc = ns_id_desc(nidl=8)
+                desc.nidt.integer = NidType.Eui64
+                desc.nidl.integer = 8
+                desc.nid.buff = ns.eui64          # same value as Identify NS EUI64
+                # list is 4096 bytes; zero fill terminates it
+                data = bytearray(4096)
+                d = desc.to_bytes(byteorder="little")
+                data[:len(d)] = d
+                await self.ctrlr_write_resp(prp1, prp2, bytes(data))
+            else:
+                status_code = StatusCode.InvalidNs
         elif (cdw10.cns.integer == Cns.ScndCtrlrLst): #active nsid list
             self.log.info("Second controller List Command")
             ctrl_list = self.sec_ctrl_list
@@ -511,7 +512,7 @@ class NvmeController():
 
         else:
             status_code = StatusCode.InvalidField
-            self.log.warning("Unhandled cns command: ", cdw10.cns.integer)
+            self.log.warning("Unhandled cns command: 0x%02x", cdw10.cns.integer)
 
         # write the completion
         sq = self.submission_queues[0]
@@ -601,15 +602,20 @@ class NvmeController():
     async def ctrlr_cmd_getlogpage(self, cmd):
         self.log.info("CMD : getlogpage")
         dw10 = cmd_dw10_getlogpage()
+        dw11 = cmd_dw11_getlogpage()
 
         dw10.populate(cmd.dw10)
+        dw11.populate(cmd.dw11)
 
-        self.log.info("lid:", dw10.lid.integer)
+        self.log.info("lid: 0x%02x", dw10.lid.integer)
         lid = dw10.lid.integer
+        # number of dwords to return (zero based)
+        numd = ((dw11.numdu.integer << 16) | dw10.numdl.integer) + 1
+        xfer_len = numd * 4
 
         prp1 = cmd.prp1.integer
         prp2 = cmd.prp2.integer
-        self.log.info("prp1 prp2: ", hex(prp1), hex(prp2))
+        self.log.info("prp1 prp2: 0x%x 0x%x", prp1, prp2)
 
         if (lid == 2): # get smart/health log
             smart_health_log = getlogpage_smart_health()
@@ -618,6 +624,8 @@ class NvmeController():
             smart_health_log.avail_spare.integer = 100
             smart_health_log.avail_spare_thres.integer = 12
             data = smart_health_log.to_bytes(byteorder="little")
+            # return exactly the requested length: truncate, or zero pad
+            data = data[:xfer_len].ljust(xfer_len, b"\x00")
             await self.ctrlr_write_data(prp1, prp2, data)
 
         # write the completion
@@ -709,8 +717,9 @@ class NvmeController():
                 elif (cmd.opc.integer == IoCmd.Write):
                     await self.ctrlr_cmd_write(sq, cmd)
                 else:
-                    self.log.warning("Unhandled io command: %r", cmd.opc.integer)
-                    raise Exception("Unhandled io command: ", cmd.opc.integer)
+                    self.log.warning("Unhandled io cmd: 0x%02x, completing with Invalid Opcode",
+                                     cmd.opc.integer)
+                    await self.ctrlr_write_completion(sq, cmd, sc=StatusCode.InvalidOpCode)
 
                 #print ("sq.head: ", sq.head)
                 sq.head = (sq.head + 1) % (sq.size)
