@@ -327,6 +327,9 @@ class Bridge(Function):
             self.log.warning("Received poisoned TLP on primary interface, reporting master data parity error")
             self.master_data_parity_error = True
 
+        self.log.debug("DSP[%s sec=%d] after-convert: type=%s completer=%s → route_downstream",
+                 self.pcie_id, self.sec_bus_num, tlp.fmt_type, tlp.completer_id)
+
         # TLPs targeting bridge function
         if self.match_tlp(tlp):
             if tlp.is_completion():
@@ -462,7 +465,7 @@ class Bridge(Function):
 
 
 class SwitchUpstreamPort(Bridge):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, upstream_port=None, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.pcie_cap.pcie_device_type = 0x5
@@ -472,7 +475,9 @@ class SwitchUpstreamPort(Bridge):
 
         self.upstream_port = None
         self.upstream_tx_handler = None
-        self.set_upstream_port(SimPort(fc_init=[[64, 1024, 64, 64, 64, 1024]]*8))
+        if upstream_port is None:
+            upstream_port = SimPort(fc_init=[[64, 1024, 64, 64, 64, 1024]]*8)
+        self.set_upstream_port(upstream_port)
 
     def set_upstream_port(self, port):
         port.log = self.log

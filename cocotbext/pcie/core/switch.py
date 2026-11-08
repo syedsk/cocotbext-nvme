@@ -65,7 +65,7 @@ class SwitchPort:
 
 class Switch:
     """Switch object, container for switch bridges and associated interconnect"""
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, upstream_port=None, **kwargs):
         self.__dict__.setdefault('default_upstream_bridge', SwitchUpstreamPort)
         self.__dict__.setdefault('default_downstream_bridge', SwitchDownstreamPort)
 
@@ -76,7 +76,11 @@ class Switch:
 
         self.switch_ports = []
 
-        self.upstream_bridge = self.default_upstream_bridge()
+        # Only SwitchUpstreamPort accepts upstream_port; RootComplex uses HostBridge
+        if upstream_port is None:
+            self.upstream_bridge = self.default_upstream_bridge()
+        else:
+            self.upstream_bridge = self.default_upstream_bridge(upstream_port=upstream_port)
         self.upstream_port = SwitchPort.upstream(self.upstream_bridge)
         self.add_switch_port(self.upstream_port)
 

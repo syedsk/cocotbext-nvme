@@ -86,8 +86,13 @@ class CosimPort:
             socket = self.cosim_sock
 
         tlp_bytes = pkt.pack()
-        tlp_len = len(pkt.data)
-        socket.send(tlp_bytes, tlp_len)
+        socket.send(tlp_bytes)
+
+        # CosimPort is the final consumer for TLPs leaving to QEMU: return
+        # the flow-control credits held on the upstream SimPort link
+        # (e.g. switch DSP <-> Device), otherwise credits leak and the link
+        # stalls after 64 TLPs of a type.
+        pkt.release_fc()
 
     async def _socket_recv(self):
         while True:
