@@ -50,6 +50,13 @@ class Cns(enum.IntEnum):
     NspGrnlrLst   = 0x16
     UuidLst       = 0x17
 
+class NidType(enum.IntEnum):
+    """Namespace Identifier Type (Identify CNS 03h descriptor NIDT)"""
+    Eui64 = 0x1     # NIDL = 8
+    Nguid = 0x2     # NIDL = 16
+    Uuid  = 0x3     # NIDL = 16
+    Csi   = 0x4     # NIDL = 1 (NVMe 2.0, only if CAP.CSS bit 6)
+
 class StatusCode(enum.IntEnum):
     Success         = 0x0
     InvalidOpCode   = 0x1
@@ -322,6 +329,15 @@ class getlogpage_smart_health(bitfield):
         self.avail_spare = binval(8)
         self.composite_temp = binval(16)
         self.critical_warning = binval(8)
+
+# Namespace Identification Descriptor (Identify CNS 03h)
+# Variable length: 4-byte header + NIDL bytes of identifier.
+class ns_id_desc(bitfield):
+    def __init__(self, nidl):
+        self.nid  = binval(nidl*8)  # bytes 4..   : namespace identifier
+        self.rsvd = binval(16)      # bytes 2-3   : reserved
+        self.nidl = binval(8)       # byte  1     : identifier length
+        self.nidt = binval(8)       # byte  0     : identifier type (NidType)
 
 class identify_namespace(bitfield):
     def __init__(self):
