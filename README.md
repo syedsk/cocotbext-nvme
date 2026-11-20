@@ -40,10 +40,12 @@ a functional NVMe controller that can be driven by a real NVMe host driver
 
 ## Requirements
 
-- Python 3.8+
-- [cocotb](https://www.cocotb.org/) version 2.0+
+- Python 3.9+
+- [cocotb](https://www.cocotb.org/) 2.x
 - [cocotbext-pcie](https://github.com/alexforencich/cocotbext-pcie)
   (vendored under `cocotbext/pcie`)
+- Python packages from `requirements.txt` (cocotb, cocotbext-axi,
+  cocotb-test, pyzmq):
 - QEMU built with the `cocotb-pcie-endpoint` cosim device
   ([fork](https://github.com/syedsk/qemu))
 - Linux host with the `nvme` driver and
@@ -58,6 +60,7 @@ a functional NVMe controller that can be driven by a real NVMe host driver
 ```bash
 ../configure \
     --target-list=x86_64-softmmu \
+    --extra-cflags=-Wno-error=discarded-qualifiers \
     --enable-virtfs \
     --disable-gtk \
     --disable-sdl \
@@ -69,7 +72,8 @@ a functional NVMe controller that can be driven by a real NVMe host driver
     --enable-cap-ng \
     --disable-libusb \
     --disable-bzip2 \
-    --enable-slirp
+    --enable-slirp \
+    --disable-docs
 
 make -j$(nproc)
 ```
@@ -82,19 +86,40 @@ set -euo pipefail
 
 TOP_DIR="$PWD"
 X86_QEMU="$TOP_DIR/binaries/qemu-system-x86_64"
-IMAGE="$TOP_DIR/binaries/jammy-server-cloudimg-amd64.img"
+BASE_IMAGE="$TOP_DIR/binaries/jammy-server-cloudimg-amd64.img"
+OVERLAY="$TOP_DIR/jammy-overlay.qcow2"
+SEED="$TOP_DIR/seed.img"
 QEMU_BIOS_DIR="$TOP_DIR/binaries"
+
+# Keep the pristine cloud image untouched; write changes to an overlay
+[ -f "$OVERLAY" ] || qemu-img create -f qcow2 -F qcow2 -b "$BASE_IMAGE" "$OVERLAY" 20G
+
+# One-time cloud-init seed (sets password + SSH key for user 'ubuntu')
+if [ ! -f "$SEED" ]; then
+    cat > user-data <<'EOF'
+#cloud-config
+password: ubuntu
+chpasswd: { expire: false }
+ssh_pwauth: true
+EOF
+    echo "instance-id: jammy-cocotb" > meta-data
+    cloud-localds "$SEED" user-data meta-data
+fi
+
+
+EP_OPTS="cocotb-pcie-endpoint,bus=rp0,addr=0x0"
+EP_OPTS+=",np_port=5555,push_port=6000,pull_port=6001"
+EP_OPTS+=",bar0_size=16384,bar0_type=0,bar1_size=16384,bar1_type=0"
 
 "$X86_QEMU" \
     -machine q35 \
     -L "$QEMU_BIOS_DIR" \
     -m 4096 \
     -smp 4 \
-    -drive file="$IMAGE",format=qcow2 \
+    -drive file="$OVERLAY",format=qcow2 \
+    -drive file="$SEED",format=raw \
     -device pcie-root-port,id=rp0,bus=pcie.0,chassis=1,slot=0 \
-    -device cocotb-pcie-endpoint,bus=rp0,addr=0x0, \
-     np_port=5555,push_port=6000,pull_port=6001,\
-     bar0_size=16384,bar0_type=0,bar1_size=16384,bar1_type=0 \
+    -device "$EP_OPTS" \
     -netdev user,id=eth0,hostfwd=tcp::2222-:22 \
     -net nic,netdev=eth0 \
     -serial mon:stdio \
@@ -106,6 +131,9 @@ QEMU_BIOS_DIR="$TOP_DIR/binaries"
 
 ```bash
 cd cocotbext-nvme
+python3 -m venv venv
+. venv/bin/activate
+pip install -r requirements.txt
 make
 ```
 

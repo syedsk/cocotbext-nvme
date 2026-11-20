@@ -113,6 +113,10 @@ class NvmeController():
                 return sq
         return None
 
+    async def ctrlr_clear_doorbell(self, qid, cq=False):
+        # SQ tail or CQ head doorbell, assuming dstrd = 0
+        await self.ep.write_region(0, 0x1000 + ((2 * qid + cq) * 4), bytes(4))
+
     async def ctrlr_raise_intr(self, cq):
         # raise msi interrupt
         intr_base = self.ep.msi_cap.msix_table_offset
@@ -139,9 +143,15 @@ class NvmeController():
                 await self.ctrlr_reset()
                 return
 
-            if (cc.en.integer == 1):
+            # only a 0 -> 1 transition enables, e.g. a shutdown notification is written with en = 1
+            if (self.admin_tid is None):
                 await self.ctrlr_enable()
-                return
+
+            if (cc.shn.integer != 0):
+                self.log.info("shutdown notification")
+                self.csts.shst.integer = 2 # shutdown processing complete
+                await self.ep.write_region(0, 0x1c, self.csts.to_bytes(byteorder="little"))
+            return
 
         # CQ Doorbell
         # assuming dstrd = 0
@@ -152,6 +162,9 @@ class NvmeController():
             cqid = (((off - 0x1000) >> 2) - 1) >> 1
             self.log.debug("cq id:%r", cqid)
             cq = self.ctrlr_get_cq(cqid)
+            if (cq is None):
+                self.log.warning("CQ doorbell for unknown cq id %r", cqid)
+                return
             cq.head = doorbell
             if (cq.head != cq.tail):
                 await self.ctrlr_raise_intr(cq)
@@ -206,16 +219,11 @@ class NvmeController():
 
         for tid in self.io_threads:
             tid.kill()
-            self.io_threads.remove(tid)
+        self.io_threads = []
 
         # delete all I/O SQs and CQs
-        for sq in self.submission_queues:
-            if sq.qid != 0:
-                self.submission_queues.remove(sq)
-
-        for cq in self.completion_queues:
-            if cq.qid != 0:
-                self.completion_queues.remove(cq)
+        self.submission_queues = [sq for sq in self.submission_queues if sq.qid == 0]
+        self.completion_queues = [cq for cq in self.completion_queues if cq.qid == 0]
 
         # reset admin sq
         sq = self.submission_queues[0]
@@ -225,10 +233,13 @@ class NvmeController():
 
         # reset admin cq
         cq = self.completion_queues[0]
-        sq.ptag = 1
+        cq.ptag = 1
         cq.head = 0
         cq.tail = 0
         cq.dbell = 0
+
+        # all doorbells, the host starts every queue at 0 again
+        await self.ep.write_region(0, 0x1000, bytes(0x1000))
 
         caps = nvme_caps()
 
@@ -243,11 +254,10 @@ class NvmeController():
         caps.cqr.integer = 1
 
         await self.ep.write_region(0, 0x0, caps.to_bytes(byteorder="little"))
-        #reset asq doorbell
-        await self.ep.write_region(0, 0x1000, b'\x00\x00\x00\x00')
 
         csts = self.csts
         csts.ready.integer = 0
+        csts.shst.integer = 0
         await self.ep.write_region(0, 0x1c, csts.to_bytes(byteorder="little"))
 
     async def ctrlr_admin_sq_process(self):
@@ -277,6 +287,8 @@ class NvmeController():
                     await self.ctrlr_cmd_deleteiocq(cmd)
                 elif (cmd.opc.integer == AdminCmd.SetFeatures):
                     await self.ctrlr_cmd_setfeatures(cmd)
+                elif (cmd.opc.integer == AdminCmd.Abort):
+                    await self.ctrlr_cmd_abort(cmd)
                 else:
                     self.log.warning("Unhandled admin cmd: 0x%02x, completing with Invalid Opcode",
                                      cmd.opc.integer)
@@ -291,9 +303,9 @@ class NvmeController():
             await Timer(10000, units="ns")
 
     async def ctrlr_write_completion(self, sq, cmd, dw0=0, sct=0, sc=0):
-        cq = self.completion_queues[sq.mapped_qid]
+        cq = self.ctrlr_get_cq(sq.mapped_qid)
 
-        if(cq.size==0):
+        if(cq is None or cq.size==0):
             self.log.debug("Not a valid CQ")
             return
         cpl = nvme_cpl()
@@ -327,11 +339,13 @@ class NvmeController():
                 data = await self.ep.mem_region.read(prp1, data_len)
                 dma_data.extend(data)
             else:
-                size = (self.mps - offset)
+                # PRP2 only holds what does not fit into the rest of PRP1's page
+                size = min(data_len, self.mps - offset)
                 data = await self.ep.mem_region.read(prp1, size)
                 dma_data.extend(data)
-                data = await self.ep.mem_region.read(prp2, offset)
-                dma_data.extend(data)
+                if (data_len > size):
+                    data = await self.ep.mem_region.read(prp2, data_len - size)
+                    dma_data.extend(data)
         else:
             self.log.debug("DMA DATA > %r",self.mps)
             size = self.mps - offset
@@ -340,6 +354,10 @@ class NvmeController():
             data_len -= size
             prp_list = False
             while(data_len > self.mps):
+                # with more pages to come, the last slot of a PRP list page points to the next list page
+                if (prp2 % self.mps == self.mps - 8):
+                    prp2 = await self.ep.mem_region.read(prp2, 8)
+                    prp2 = int.from_bytes(prp2, byteorder="little")
                 add = await self.ep.mem_region.read(prp2, 8)
                 add = int.from_bytes(add, byteorder="little")
                 data = await self.ep.mem_region.read(add, self.mps)
@@ -537,7 +555,9 @@ class NvmeController():
                         baseaddr=cmd.prp1.integer,
                         ien=dw11.ien.integer,
                         iv=dw11.iv.integer)
+        self.completion_queues = [q for q in self.completion_queues if q.qid != cq.qid]
         self.completion_queues.append(cq)
+        await self.ctrlr_clear_doorbell(cq.qid, cq=True)
 
         # write the completion
         await self.ctrlr_write_completion(self.submission_queues[0], cmd)
@@ -556,7 +576,9 @@ class NvmeController():
                         size=dw10.qsize.integer + 1, # zero based value
                         baseaddr=cmd.prp1.integer,
                         mapped_qid=dw11.cqid.integer)
+        self.submission_queues = [q for q in self.submission_queues if q.qid != sq.qid]
         self.submission_queues.append(sq)
+        await self.ctrlr_clear_doorbell(sq.qid)
 
         # write the completion
         await self.ctrlr_write_completion(self.submission_queues[0], cmd)
@@ -572,6 +594,12 @@ class NvmeController():
         dw10.populate(cmd.dw10)
 
         self.log.debug("Qid : %r", dw10.qid.integer)
+
+        qid = dw10.qid.integer
+        if (qid != 0):
+            self.completion_queues = [q for q in self.completion_queues if q.qid != qid]
+            await self.ctrlr_clear_doorbell(qid, cq=True)
+
         # write the completion
         await self.ctrlr_write_completion(self.submission_queues[0], cmd)
 
@@ -591,9 +619,13 @@ class NvmeController():
         qid = dw10.qid.integer
         sq = self.ctrlr_get_sq(qid)
 
-        self.io_threads.remove(sq.tid)
-        sq.tid.kill()
-        sq.tid = None
+        if (sq is not None):
+            if (sq.tid is not None):
+                self.io_threads.remove(sq.tid)
+                sq.tid.kill()
+                sq.tid = None
+            self.submission_queues.remove(sq)
+            await self.ctrlr_clear_doorbell(qid)
 
         # write the completion
         await self.ctrlr_write_completion(self.submission_queues[0], cmd)
@@ -652,6 +684,12 @@ class NvmeController():
         val = dw0.to_int()
         sq = self.submission_queues[0]
         await self.ctrlr_write_completion(sq, cmd, dw0=val)
+
+    async def ctrlr_cmd_abort(self, cmd):
+        self.log.info("CMD: abort sqid %r cid %r", cmd.dw10.integer & 0xffff, cmd.dw10.integer >> 16)
+        # commands are not abortable here, DW0 bit 0 set means "command not aborted"
+        sq = self.submission_queues[0]
+        await self.ctrlr_write_completion(sq, cmd, dw0=1)
 
     async def ctrlr_cmd_read(self, sq, cmd):
         self.log.info("CMD: Read")
